@@ -9,6 +9,10 @@ import model
 import sim_config
 import training_utils
 
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
 
 def run(
     seed: int,
@@ -32,6 +36,8 @@ def run(
 
     device = torch.device("cuda:" + str(device) if device != "c" and torch.cuda.is_available() else "cpu")
 
+    logging.info("Using device: {}".format(device))
+    
     # data config
     n_sample = sample
     obs_dim = data_config.obs_dim
@@ -67,7 +73,9 @@ def run(
     if not eval_only:
         dg.set_train_size(n_sample)
 
-    print("Training with {} samples".format(n_sample))
+    # print("Training with {} samples".format(n_sample))
+    logging.info("Training with {} samples".format(n_sample))
+    
     # dg = dataloader.DataGeneratorRoche(n_sample, obs_dim, t_max, step_size,
     #                                    roche_config, output_sigma, latent_dim, sparsity, device=device)
     # dg.generate_data()
@@ -192,18 +200,25 @@ if __name__ == "__main__":
     arg_itr = args.arg_itr
 
     if dc == "dim8":
+        logging.info("Using dim8 config")
         data_config = sim_config.dim8_config
     elif dc == "dim12":
+        logging.info("Using dim12 config")
         data_config = sim_config.dim12_config
     else:
+        logging.info("Using default config")
         data_config = sim_config.DataConfig(n_sample=sample)
     roche_config = sim_config.RochConfig()
     if method == "expert":
+        logging.info("Using expert only config")
         model_config = sim_config.ModelConfig(expert_only=True, path=path)
     elif method == "neural":
+        logging.info("Using neural only config")
         model_config = sim_config.ModelConfig(neural_ode=True, path=path)
     elif method == "hybrid":
+        logging.info("Using hybrid config")
         model_config = sim_config.ModelConfig(path=path)
+    # elif method == 
 
     # todo: try no shuffle
     optim_config = sim_config.OptimConfig(shuffle=False, n_restart=restart, batch_size=batch_size, lr=args.lr)

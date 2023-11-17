@@ -1,8 +1,12 @@
 import time
 
+import logging
 import numpy as np
 import properscoring as ps
 import torch
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 
 def variational_training_loop(
@@ -63,9 +67,13 @@ def variational_training_loop(
                         total_loss += model.loss(data).item()
                     except RuntimeError as e:
                         total_loss += 1e9
-                        print(e)
+                        # print(e)
+                        logging.info(e)
                         break
-                print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
+                # print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
+                logging.info(
+                    "Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item())
+                )
                 if total_loss < best_loss:
                     best_loss = total_loss
                     early_stop_counter = 0
@@ -83,6 +91,7 @@ def variational_training_loop(
 
     # load best model
     try:
+        logging.info("Loading best model")
         best_model = torch.load(path + model.model_name)
     except FileNotFoundError:
         model.save(path, 0, best_on_disk)
@@ -91,8 +100,10 @@ def variational_training_loop(
     model.encoder.load_state_dict(best_model["encoder_state_dict"])
     model.decoder.load_state_dict(best_model["decoder_state_dict"])
     best_loss = best_model["best_loss"]
-    print("Time: {}".format(end - start))
-    print("Overall best loss: {:.6f}".format(best_loss))
+    # print("Time: {}".format(end - start))
+    logging.info("Time: {}".format(end - start))
+    # print("Overall best loss: {:.6f}".format(best_loss))
+    logging.info("Overall best loss: {:.6f}".format(best_loss))
 
     return model, best_loss, end - start
 
@@ -193,10 +204,15 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
         cprs_x = np.mean(total_cprs_x)
         cprs_x_sd = np.std(total_cprs_x) / np.sqrt(len(total_cprs_x))
 
-        print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
-        print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
-        print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
-        print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
+        # print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
+        # print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
+        # print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
+        # print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
+        
+        logging.info("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
+        logging.info("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
+        logging.info("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
+        logging.info("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
 
         return rmse_z0, rmse_z0_sd, cprs_z0, rmse_x, rmse_x_sd, cprs_x
 
@@ -478,10 +494,14 @@ def evaluate_ensemble(model_expert, model_ml, data_generator, batch_size, t0, mc
         cprs_x = np.mean(total_cprs_x)
         cprs_x_sd = np.std(total_cprs_x) / np.sqrt(len(total_cprs_x))
 
-        print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
-        print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
-        print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
-        print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
+        # print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
+        logging.info("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
+        # print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
+        logging.info("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
+        # print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
+        logging.info("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
+        # print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
+        logging.info("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
 
         return rmse_z0, rmse_z0_sd, cprs_z0, rmse_x, rmse_x_sd, cprs_x
 

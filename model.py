@@ -381,6 +381,7 @@ class LSTMBaseline(nn.Module):
 
 
 class EncoderLSTM(nn.Module, GaussianReparam):
+    """Is used in the simulation setting. """
     def __init__(self, input_dim, hidden_dim, output_dim, normalize=True, device=None):
         # output dim is the dim of initial condition
         # input dim is observation and action
@@ -1260,40 +1261,6 @@ class VariationalInferenceReal(VariationalInference):
         loss = lik + kld_loss
         return loss
 
-    # def loss(self, data):
-    #     x = data['measurements']
-    #     a = data['actions']
-    #     mask = data['masks']
-    #     s = data['statics']
-    #
-    #     # q
-    #     a_in = torch.cat([a, s], dim=-1)
-    #     mu, log_var = self.encoder(x, a_in, mask)
-    #
-    #     # B, D
-    #     if self.elbo:
-    #         z = self.encoder.reparameterize(mu, log_var)
-    #     else:
-    #         z = mu
-    #
-    #     x_hat, h_hat = self.decoder(z, a, s)
-    #
-    #     # average over B (samples in mini batch)
-    #     lik = torch.sum((x - x_hat) ** 2 * mask) / x.shape[1]
-    #
-    #     if not self.elbo:
-    #         return lik
-    #
-    #     # KL loss
-    #     if len(log_var.shape) == 2:
-    #         if self.prior_log_pdf is None:
-    #             kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
-    #         else:
-    #             kld_loss = torch.mean(self.mc_kl(mu, log_var, self.mc_size), dim=0)
-    #     else:
-    #         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=-1))
-    #     loss = lik + kld_loss
-    #     return loss
 
 
 class VariationalInferenceFlow:
@@ -1378,60 +1345,3 @@ class VariationalInferenceFlow:
         mc_tensor = torch.stack(mc_samples, dim=-1)
         mc_mean = torch.mean(mc_tensor, dim=-1)
         return mc_mean
-
-
-# DOES NOT WORK
-# class EncoderLinearLSTM(nn.Module):
-#     def __init__(self, input_dim, hidden_dim, output_dim, ratio=0.1, device=None):
-#         # output dim is the dim of initial condition
-#         # input dim is observation and action
-#
-#         super(EncoderLinearLSTM, self).__init__()
-#
-#         if device is None:
-#             self.device = get_device()
-#         else:
-#             self.device = device
-#
-#         self.hidden_dim = hidden_dim
-#         self.ratio = ratio
-#
-#         self.encoder_LSTM = EncoderLSTM(input_dim, hidden_dim, output_dim, False, device)
-#
-#         self.lin = nn.Linear(input_dim, output_dim).to(self.device)
-#
-#         self.log_var = nn.Sequential(
-#             nn.Linear(input_dim, hidden_dim),
-#             nn.ELU(),
-#             nn.Linear(hidden_dim, output_dim)
-#         ).to(self.device)
-#
-#     def forward(self, x, a, mask):
-#         # crude approximation using the first observation
-#
-#         y_in = torch.cat([x, a], dim=-1)[0]
-#         mu1 = self.lin(y_in)
-#         log_var1 = self.log_var(y_in)
-#
-#         if self.ratio > 0:
-#             mu2, log_var2 = self.encoder_LSTM(x, a, mask)
-#         else:
-#             mu2, log_var2 = 0., 0.
-#
-#         mu = mu1 + self.ratio * mu2
-#         log_var = log_var1 + self.ratio * log_var2
-#
-#         # scale mu
-#         mu = torch.exp(mu) / 10
-#         mask = torch.zeros_like(mu)
-#         mask[:, 0] = 1
-#         mu = mu * mask
-#
-#         # scale var
-#         log_var = log_var - 5.
-#
-#         return mu, log_var
-#
-#     def reparameterize(self, mu, log_var):
-#
-#         return GaussianReparam.reparameterize(mu, log_var)
