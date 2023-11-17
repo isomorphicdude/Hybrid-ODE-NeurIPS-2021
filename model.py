@@ -38,6 +38,12 @@ class StandardNormalPrior:
         return torch.sum(n.log_prob(z), dim=-1)
 
 
+class LaplacePrior:
+    @staticmethod
+    def log_density(z):
+        n = dist.laplace.Laplace(torch.tensor([0.0]).to(z), torch.tensor([1.0]).to(z))
+        return torch.sum(n.log_prob(z), dim=-1)
+
 class ExponentialPrior:
     @staticmethod
     def log_density(z):
@@ -242,82 +248,6 @@ class EncoderLSTMReal(nn.Module, GaussianReparam):
             return mu, log_var
 
 
-# class CDE(nn.Module, GaussianReparam):
-#     def __init__(self, input_dim, hidden_dim, output_dim, method, ode_step_size, normalize=True, device=None):
-#         super(CDE, self).__init__()
-#
-#         if device is None:
-#             self.device = get_device()
-#         else:
-#             self.device = device
-#         self.input_dim = input_dim
-#         self.hidden_dim = hidden_dim
-#         self.normalize = normalize
-#         self.output_dim = output_dim
-#         self.model_name = 'CDE'
-#
-#         input_channels = input_dim
-#         hidden_channels = hidden_dim
-#         output_channels = output_dim
-#
-#         self.initial = nn.Linear(input_channels, hidden_channels)
-#         self.func = F(input_dim, hidden_dim)
-#
-#         self.readout = nn.Sequential(
-#             nn.Linear(hidden_channels, hidden_channels + 1),
-#             nn.Tanh(),
-#             nn.Linear(hidden_channels + 1, output_channels),
-#             nn.Tanh(),
-#         )
-#
-#         self.readout2 = nn.Sequential(
-#             nn.Linear(hidden_channels, hidden_channels + 1),
-#             nn.Tanh(),
-#             nn.Linear(hidden_channels + 1, output_channels),
-#             nn.Tanh(),
-#         )
-#
-#         # self.readout = nn.Linear(hidden_channels, output_channels)
-#         # self.readout2 = nn.Linear(hidden_channels, output_channels)
-#
-#         options = {}
-#         # options.update({'step_t': self.t})
-#         # options.update({'jump_t': self.t})
-#         options.update({'step_size': ode_step_size})
-#         options.update({'perturb': True})
-#         self.rtol = 1e-7
-#         self.atol = 1e-8
-#         self.options = options
-#         self.method = method
-#         self.step_size = ode_step_size
-#
-#     def forward(self, x, a, m):
-#         x = torch.flip(x, [0])
-#         a = torch.flip(a, [0])
-#         m = torch.flip(m, [0])
-#         m = m == 1
-#         x[~m] = torch.tensor(np.nan)
-#         m = torch.cumsum(m, dim=0)
-#         t = torch.arange(m.shape[0])
-#         t = torch.stack([t] * m.shape[1], dim=-1)
-#         t = t[..., None]
-#         x_in = torch.cat([x, a, m, t], dim=-1)
-#         x = x_in.permute((1, 0, 2))
-#
-#         coeffs = torchcde.natural_cubic_coeffs(x)
-#         X = torchcde.NaturalCubicSpline(coeffs)
-#         X0 = X.evaluate(X.interval[0])
-#         assert torch.sum(torch.isnan(X0)) == 0
-#         z0 = self.initial(X0)
-#         zt = torchcde.cdeint(X=X, func=self.func, z0=z0, t=X.interval, adjoint=False, method=self.method, options=self.options)
-#         zT = zt[..., -1, :]  # get the terminal value of the CDE
-#         assert torch.sum(torch.isnan(zT)) == 0
-#
-#         mu = self.readout(zT)
-#         log_sig = self.readout2(zT)
-#
-#         return mu, log_sig
-
 
 class LSTMBaseline(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, normalize=True, device=None):
@@ -413,14 +343,15 @@ class EncoderLSTM(nn.Module, GaussianReparam):
 
         x = x.squeeze()
 
-        y_in = torch.cat([x, a], dim=-1)
+        y_in = torch.cat([x, a], dim=-1) # concatenate observation and action
         mask_in = torch.cat([mask, torch.ones_like(a)], dim=-1)
 
         hidden = None
 
         for t in reversed(range(t_max)):
             obs = y_in[t : t + 1, ...] * mask_in[t : t + 1, ...]
-            out, hidden = self.lstm(obs, hidden)
+            out, hidden = self.lstm(obs, hidden) 
+            
         out_linear = self.lin(out)
         log_var = self.log_var(out)
 
@@ -445,6 +376,7 @@ class EncoderLSTM(nn.Module, GaussianReparam):
 
 
 class RocheODE(nn.Module):
+    """Expert ODE"""
     def __init__(self, latent_dim, action_dim, t_max, step_size, ablate=False, device=None, dtype=DTYPE):
         super().__init__()
 
@@ -452,8 +384,14 @@ class RocheODE(nn.Module):
 
         self.action_dim = action_dim
         self.latent_dim = int(latent_dim)
+        
+        # fixed expert dim
         self.expert_dim = int(4)
+        
+        # the rest is governed by neural ODE
         self.ml_dim = self.latent_dim - self.expert_dim
+        
+        # use hybrid when expanded
         self.expanded = True if self.ml_dim > 0 else False
         self.ablate = ablate
 
@@ -465,6 +403,7 @@ class RocheODE(nn.Module):
         self.t_max = t_max
         self.step_size = step_size
 
+        # parameters for the expert ODE
         dc = sim_config.RochConfig()
         self.HillCure = nn.Parameter(torch.tensor(dc.HillCure, device=self.device, dtype=dtype))
         self.HillPatho = nn.Parameter(torch.tensor(dc.HillPatho, device=self.device, dtype=dtype))
@@ -481,12 +420,17 @@ class RocheODE(nn.Module):
         self.k_immune_off = nn.Parameter(torch.tensor(dc.k_immune_off, device=self.device, dtype=dtype))
         self.k_immunity = nn.Parameter(torch.tensor(dc.k_immunity, device=self.device, dtype=dtype))
         self.kel = nn.Parameter(torch.tensor(dc.kel, device=self.device, dtype=dtype))
+        
         if self.ablate:
+            # ablation uses mis-specified parameters
             self.theta_1 = nn.Parameter(torch.tensor(1, device=self.device, dtype=dtype))
             self.theta_2 = nn.Parameter(torch.tensor(2, device=self.device, dtype=dtype))
 
         if self.expanded:
-            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim, self.ml_dim), nn.Tanh()).to(self.device)
+            # if hybrid, then feed into linear layer
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim, 
+                                                  self.ml_dim), 
+                                        nn.Tanh()).to(self.device)
         else:
             self.ml_net = nn.Identity().to(self.device)
 
@@ -494,14 +438,17 @@ class RocheODE(nn.Module):
         self.dosage = None
 
     def set_action(self, action):
-        # T, B, D
+        # T, B, D (Time, Batch, Dose)
         # B
-        self.dosage = torch.max(action[..., 0], dim=0)[0]
+        # action[...,0] returns the Days x Batch_size matrix of dosage
+        # torch.max(action[...,0], dim=0)[0] returns the maximum dosage for each patient
+        self.dosage = torch.max(action[..., 0], dim=0)[0] 
 
         time_list = []
         for i in range(action.shape[1]):
+            # indices of non-zero dosage
             time = torch.where(action[..., 0][:, i] != 0)[0]
-            time = time * self.step_size
+            time = time * self.step_size # step is 1
             time_list.append(time)
 
         # B, N_DOSE
@@ -516,7 +463,8 @@ class RocheODE(nn.Module):
     def forward(self, t, y):
         # y: B, D
 
-        # B
+        # length of B
+        # the expert variables are the first 4
         Disease = y[:, 0]
         ImmuneReact = y[:, 1]
         Immunity = y[:, 2]
@@ -551,8 +499,10 @@ class RocheODE(nn.Module):
 
         if self.expanded:
             dmldt = self.ml_net(y)
+            # separate the expert and the neural ODE
             return torch.cat([dxdt1[..., None], dxdt2[..., None], dxdt3[..., None], dxdt4[..., None], dmldt], dim=-1)
         else:
+            # expert only
             return torch.stack([dxdt1, dxdt2, dxdt3, dxdt4], dim=-1)
 
 
@@ -835,7 +785,11 @@ class DecoderReal(nn.Module):
         self.ode.set_action_static(a, s)
         if len(init.shape) == 2:
             # solve ode
-            h = dto(self.ode, init, self.t, method=self.method, options=self.options, rtol=self.rtol, atol=self.atol)
+            h = dto(self.ode, init, self.t, 
+                    method=self.method,
+                    options=self.options,
+                    rtol=self.rtol,
+                    atol=self.atol)
         else:
             h_list = []
             for i in range(self.t_max - 1):
@@ -966,6 +920,8 @@ class DecoderRealBenchmark(nn.Module):
         x_hat = self.output_function(h)
         return x_hat, h
 
+class BayesianNeuralODE(nn.Module):
+    pass
 
 class NeuralODE(nn.Module):
     def __init__(self, latent_dim, action_dim, t_max, step_size, device=None, dtype=DTYPE):
@@ -987,7 +943,9 @@ class NeuralODE(nn.Module):
         self.step_size = step_size
 
         dc = sim_config.RochConfig()
-        self.kel = nn.Parameter(torch.tensor(dc.kel, device=self.device, dtype=dtype))
+        self.kel = nn.Parameter(torch.tensor(dc.kel, 
+                                             device=self.device, 
+                                             dtype=dtype))
 
         self.ml_net = nn.Sequential(
             nn.Linear(self.latent_dim + 1, self.latent_dim * 10),
@@ -1054,6 +1012,7 @@ class RocheExpertDecoder(nn.Module):
         self.roche = roche
         self.ablate = ablate
         if roche:
+            # include expert dim
             if latent_dim == 4:
                 self.model_name = "ExpertDecoder"
             else:
@@ -1070,7 +1029,10 @@ class RocheExpertDecoder(nn.Module):
         else:
             self.device = device
 
-        self.t = torch.arange(0, t_max + step_size, step_size, device=self.device, dtype=dtype)
+        self.t = torch.arange(0, 
+                              t_max + step_size,
+                              step_size, 
+                              device=self.device, dtype=dtype)
 
         options = {}
         options.update({"method": method})
@@ -1088,15 +1050,9 @@ class RocheExpertDecoder(nn.Module):
 
         self.options = options
 
-        # self.output_function = nn.Sequential(
-        #     nn.Linear(self.latent_dim, self.latent_dim * 2),
-        #     nn.ELU(),
-        #     nn.Linear(self.latent_dim * 2, self.obs_dim),
-        #     nn.Tanh()
-        # ).to(self.device)
-
         self.output_function = nn.Sequential(
-            nn.Linear(self.latent_dim, self.obs_dim, bias=True),
+            nn.Linear(self.latent_dim, 
+                      self.obs_dim, bias=True),
             # nn.Tanh()
         ).to(self.device)
 
@@ -1106,7 +1062,9 @@ class RocheExpertDecoder(nn.Module):
         # nn.Tanh()
         # ).to(self.device)
         if roche:
-            self.ode = RocheODE(latent_dim, action_dim, t_max, step_size, ablate=self.ablate, device=device)
+            # include expert dim
+            self.ode = RocheODE(latent_dim, action_dim, t_max, step_size, 
+                                ablate=self.ablate, device=device)
         else:
             self.ode = NeuralODE(latent_dim, action_dim, t_max, step_size, device)
 
@@ -1114,11 +1072,19 @@ class RocheExpertDecoder(nn.Module):
         self.ode.set_action(a)
         # solve ode
         # h = ode_solver.odesolve(self.ode, init, self.options)
+        
         h = dto(
-            self.ode, init, self.t, rtol=self.options["rtol"], atol=self.options["atol"], method=self.options["method"]
+            self.ode, 
+            init, 
+            self.t, 
+            rtol=self.options["rtol"], 
+            atol=self.options["atol"], 
+            method=self.options["method"]
         )
+        
         # generate output
         x_hat = self.output_function(h)
+        
         return x_hat, h
 
 

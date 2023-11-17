@@ -34,10 +34,14 @@ class DataConfig(NamedTuple):
 
 
 dim8_config = \
-    DataConfig(obs_dim=40, latent_dim=8, output_sparsity=1 - 0.375, output_sigma=0.2, dose_max=10)
+    DataConfig(obs_dim=40, latent_dim=8, 
+               output_sparsity=1 - 0.375, 
+               output_sigma=0.2, dose_max=10)
 
 dim12_config = \
-    DataConfig(obs_dim=80, latent_dim=12, output_sparsity=1 - 0.25, output_sigma=0.2, dose_max=10)
+    DataConfig(obs_dim=80, latent_dim=12, 
+               output_sparsity=1 - 0.25, 
+               output_sigma=0.2, dose_max=10)
 
 
 class ModelConfig(NamedTuple):

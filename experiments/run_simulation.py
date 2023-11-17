@@ -59,14 +59,10 @@ def run(
     test_freq = optim_config.test_freq
     early_stop = optim_config.early_stop
 
-    # with open('data/datafile.pkl', 'rb') as f:
-    #     dg = pickle.load(f)
 
     with open(data_path, "rb") as f:
         dg = pickle.load(f)
 
-    # with open('data/datafile_high_dim.pkl', 'rb') as f:
-    #     dg = pickle.load(f)
 
     dg.set_device(device)
 
@@ -76,10 +72,6 @@ def run(
     # print("Training with {} samples".format(n_sample))
     logging.info("Training with {} samples".format(n_sample))
     
-    # dg = dataloader.DataGeneratorRoche(n_sample, obs_dim, t_max, step_size,
-    #                                    roche_config, output_sigma, latent_dim, sparsity, device=device)
-    # dg.generate_data()
-    # dg.split_sample()
 
     # model config
     encoder_latent_ratio = model_config.encoder_latent_ratio
@@ -87,6 +79,7 @@ def run(
         if model_config.expert_only:
             encoder_output_dim = dg.expert_dim
         else:
+            # encoder 
             encoder_output_dim = dg.latent_dim
 
     if model_config.neural_ode:
@@ -101,6 +94,9 @@ def run(
     best_on_disk = 1e9
 
     for i in range(optim_config.n_restart):
+        # each restart has a different model
+        logging.info("Restart No. {}".format(i))
+        
         encoder = model.EncoderLSTM(
             obs_dim + action_dim,
             int(obs_dim * encoder_latent_ratio),
@@ -108,6 +104,7 @@ def run(
             device=device,
             normalize=normalize,
         )
+        
         decoder = model.RocheExpertDecoder(
             obs_dim,
             encoder_output_dim,
@@ -120,9 +117,11 @@ def run(
             ablate=ablate,
         )
 
+        # stacked into a variational inference model
         vi = model.VariationalInference(encoder, decoder, prior_log_pdf=prior, elbo=elbo)
 
         if eval_only:
+            logging.info("Evaluation only. Breaking...")
             break
 
         if init_path is not None:
@@ -153,11 +152,15 @@ def run(
         vi, best_on_disk, training_time = res
 
     if eval_only:
+        logging.info("Evaluating")
+        
         best_model = torch.load(path + vi.model_name)
         vi.encoder.load_state_dict(best_model["encoder_state_dict"])
         vi.decoder.load_state_dict(best_model["decoder_state_dict"])
+        
         best_loss = best_model["best_loss"]
-        print("Overall best loss: {:.6f}".format(best_loss))
+        # print("Overall best loss: {:.6f}".format(best_loss))
+        logging.info("Overall best loss: {:.6f}".format(best_loss))
 
     training_utils.evaluate(vi, dg, batch_size, eval_config.t0)
 

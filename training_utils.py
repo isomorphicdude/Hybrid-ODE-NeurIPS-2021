@@ -47,7 +47,7 @@ def variational_training_loop(
         try:
             loss = model.loss(data)
         except RuntimeError as e:
-            print(e)
+            logging.error(e)
             break
         # print(loss.item())
 

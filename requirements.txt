@@ -1,5 +1,5 @@
 argparse;
-jupyterlab  # Optional, if you wish to run the jupyter notebooks.
+# jupyterlab  # Optional, if you wish to run the jupyter notebooks.
 matplotlib
 numpy
 pandas
