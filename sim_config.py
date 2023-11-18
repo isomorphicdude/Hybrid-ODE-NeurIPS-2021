@@ -58,7 +58,8 @@ class OptimConfig(NamedTuple):
     batch_size: int = 50
     test_freq: int = 10
     shuffle: bool = True
-    n_restart: int = 5
+    # n_restart: int = 5
+    n_restart: int = 1
     early_stop: int = 10
 
 
