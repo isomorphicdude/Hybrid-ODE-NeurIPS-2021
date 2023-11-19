@@ -22,7 +22,7 @@ def variational_training_loop(
     shuffle=True,
     train_fold="train",
 ):
-
+    logging.info("Training {}".format(model.model_name))
     best_loss = 1e9
 
     early_stop_counter = 0
@@ -85,6 +85,7 @@ def variational_training_loop(
                     model.save(path, itr, best_on_disk)
 
         if early_stop_counter >= early_stop:
+            logging.info("Early stopping")
             break
 
     end = time.time()
@@ -104,6 +105,8 @@ def variational_training_loop(
     logging.info("Time: {}".format(end - start))
     # print("Overall best loss: {:.6f}".format(best_loss))
     logging.info("Overall best loss: {:.6f}".format(best_loss))
+    
+    logging.info("Training complete")
 
     return model, best_loss, end - start
 
@@ -117,6 +120,8 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
         total_cprs_x = list()
 
         for chunk in range(data_generator.test_size // batch_size):
+            
+            # get test data
             data = data_generator.get_split("test", batch_size, chunk)
 
             x = data["measurements"][:t0]
@@ -133,6 +138,7 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
                 z0_hat = encoder_out[0]
                 x_hat, _ = model.decoder(z0_hat, data["actions"], data["statics"])
             else:
+                # simulation data
                 encoder_out = model.encoder(x, a, mask)
                 z0_hat = encoder_out[0]
                 x_hat, _ = model.decoder(z0_hat, data["actions"])

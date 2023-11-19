@@ -95,7 +95,7 @@ def run(
 
     for i in range(optim_config.n_restart):
         # each restart has a different model
-        logging.info("Restart No. {}".format(i))
+        logging.info("Restart No. {} out of {}".format(i + 1, optim_config.n_restart))
         
         encoder = model.EncoderLSTM(
             obs_dim + action_dim,
@@ -162,6 +162,7 @@ def run(
         # print("Overall best loss: {:.6f}".format(best_loss))
         logging.info("Overall best loss: {:.6f}".format(best_loss))
 
+    logging.info("Evaluating after training")
     training_utils.evaluate(vi, dg, batch_size, eval_config.t0)
 
 

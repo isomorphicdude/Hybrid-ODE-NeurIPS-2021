@@ -44,6 +44,7 @@ class LaplacePrior:
         n = dist.laplace.Laplace(torch.tensor([0.0]).to(z), torch.tensor([1.0]).to(z))
         return torch.sum(n.log_prob(z), dim=-1)
 
+
 class ExponentialPrior:
     @staticmethod
     def log_density(z):
@@ -492,6 +493,7 @@ class RocheODE(nn.Module):
 
             dxdt4 = self.kel * Dose - self.kel * Dose2
         else:
+            # mis-specified parameters
             dxdt1 = ImmuneReact
             dxdt2 = -1.0 * Disease * self.theta_1
             dxdt3 = Dose2
@@ -500,7 +502,12 @@ class RocheODE(nn.Module):
         if self.expanded:
             dmldt = self.ml_net(y)
             # separate the expert and the neural ODE
-            return torch.cat([dxdt1[..., None], dxdt2[..., None], dxdt3[..., None], dxdt4[..., None], dmldt], dim=-1)
+            return torch.cat([dxdt1[..., None], 
+                              dxdt2[..., None], 
+                              dxdt3[..., None], 
+                              dxdt4[..., None], 
+                              dmldt], 
+                             dim=-1)
         else:
             # expert only
             return torch.stack([dxdt1, dxdt2, dxdt3, dxdt4], dim=-1)
@@ -1152,8 +1159,11 @@ class VariationalInference:
         # TODO: assume standard normal prior
 
         if self.prior_log_pdf is None:
+            # if no prior, use standard normal
+            # analytic KL
             kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
         else:
+            # monte carlo KL
             kld_loss = torch.mean(self.mc_kl(mu, log_var, self.mc_size), dim=0)
 
         loss = lik + kld_loss
@@ -1300,12 +1310,15 @@ class VariationalInferenceFlow:
         mc_samples = list()
 
         for i in range(sample_size):
-            # sample from q(z)
+            # sample from q(z), the variational distribution
             mu, log_var, z, log_det_j, z0 = self.encoder.reparameterize(*encoder_out)
-            # log p(z)
+            
+            # log p(z), the specified prior, exponential
             log_p = self.prior_log_pdf(z)
+            
             # log q(z)
             log_q = self.encoder.log_density(mu, log_var, z, log_det_j, z0)
+            
             mc_samples.append(log_q - log_p)
 
         mc_tensor = torch.stack(mc_samples, dim=-1)

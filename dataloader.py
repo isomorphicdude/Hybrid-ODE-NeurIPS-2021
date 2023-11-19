@@ -189,6 +189,7 @@ class DataGeneratorRoche:
             fill_in = np.zeros((self.action_dim, self.time_dim - actions.shape[1]))
             actions = np.concatenate((actions, fill_in), axis=1)
 
+        # mask the latent observations and set them 0
         mask = np.ones(self.time_dim)
         mask[latents.shape[1] :] = 0
         mask = mask[None, :]
