@@ -21,7 +21,14 @@ def variational_training_loop(
     path="model/",
     shuffle=True,
     train_fold="train",
+    new=True,
+    print_future_mse=False, 
+    t0 = 5,
+    hybrid_cde = False
 ):
+    if print_future_mse:
+        assert t0 > 0
+        
     logging.info("Training {}".format(model.model_name))
     best_loss = 1e9
 
@@ -44,13 +51,15 @@ def variational_training_loop(
         # print('compute loss')
         # loss = model.loss(data)
         #
-        try:
-            loss = model.loss(data)
-        except RuntimeError as e:
-            logging.error(e)
-            break
-        # print(loss.item())
-
+        # try:
+        #     loss = model.loss(data)
+        # except RuntimeError as e:
+        #     print(e)
+        #     break
+        # print(model.decoder.flat_initial_params)
+        # print(list(model.decoder.projection.parameters()))
+        print(f"iter {itr}")
+        loss = model.loss(data)
         loss.backward()
         # print('calculate backward')
 
@@ -59,7 +68,6 @@ def variational_training_loop(
 
         if itr % test_freq == 0:
             with torch.no_grad():
-
                 total_loss = 0
                 for chunk in range(data_generator.val_size // batch_size):
                     data = data_generator.get_split("val", batch_size, chunk)
@@ -70,10 +78,38 @@ def variational_training_loop(
                         # print(e)
                         logging.info(e)
                         break
-                # print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
-                logging.info(
-                    "Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item())
-                )
+                    if print_future_mse:
+                        x = data["measurements"][:t0]
+                        a = data["actions"][:t0]
+                        mask = data["masks"][:t0]
+                        
+                        # simulation data
+                        encoder_out = model.encoder(x, a, mask)
+                        if hybrid_cde:
+                            _z0_hat_og = encoder_out[0]
+                            _z0_hat_exp = model.expert_encoder(x, a, mask)[0]
+                            # print(_z0_hat_og.shape, _z0_hat_exp.shape)
+                            z0_hat = torch.cat((
+                                _z0_hat_og,
+                                _z0_hat_exp
+                            ), dim=1
+                            )
+                        else:
+                            z0_hat = encoder_out[0]
+                        
+                        x_hat, _ = model.decoder(z0_hat, data["actions"])
+                        x_hat = x_hat[t0:, ...]
+                        # predicting future
+                        x_test = data["measurements"][t0:]
+                        mask_test = data["masks"][t0:]
+                        future_mse = torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))
+                        print(f"Iter {itr} | Future mse starting at {t0}: {future_mse}")
+                        
+                        # logging.info(f"Future mse: {torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))}")
+                print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
+                # logging.info(
+                #     "Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item())
+                # )
                 if total_loss < best_loss:
                     best_loss = total_loss
                     early_stop_counter = 0
@@ -81,8 +117,10 @@ def variational_training_loop(
                     early_stop_counter += 1
 
                 if total_loss < best_on_disk:
+                    print("Saving best model")
                     best_on_disk = total_loss
                     model.save(path, itr, best_on_disk)
+                
 
         if early_stop_counter >= early_stop:
             logging.info("Early stopping")
@@ -91,20 +129,21 @@ def variational_training_loop(
     end = time.time()
 
     # load best model
-    try:
-        logging.info("Loading best model")
-        best_model = torch.load(path + model.model_name)
-    except FileNotFoundError:
-        model.save(path, 0, best_on_disk)
-        best_model = torch.load(path + model.model_name)
-
-    model.encoder.load_state_dict(best_model["encoder_state_dict"])
-    model.decoder.load_state_dict(best_model["decoder_state_dict"])
-    best_loss = best_model["best_loss"]
+    # try:
+    #     logging.info("Loading best model")
+    #     # best_model = torch.load(path + model.model_name)
+    # except FileNotFoundError:
+    #     # model.save(path, 0, best_on_disk)
+    #     # best_model = torch.load(path + model.model_name)
+    # if not new:
+    #     # model.encoder.load_state_dict(best_model["encoder_state_dict"])
+    #     model.decoder.load_state_dict(best_model["decoder_state_dict"])
+        
+    # best_loss = best_model["best_loss"]
     # print("Time: {}".format(end - start))
     logging.info("Time: {}".format(end - start))
     # print("Overall best loss: {:.6f}".format(best_loss))
-    logging.info("Overall best loss: {:.6f}".format(best_loss))
+    # logging.info("Overall best loss: {:.6f}".format(best_loss))
     
     logging.info("Training complete")
 
@@ -154,7 +193,7 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
             total_rmse_x.append(
                 torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2))
             )
-
+            print(f"Future mse: {torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))}")
             z_list = list()
             x_hat_list = list()
 

@@ -49,9 +49,13 @@ class DiffEqSequential(DiffEqModule):
     def forward(self, t, y, params: Optional[List] = None):
         if params is None:
             for layer in self.layers:
+                # print(y.shape)
                 y = layer(t, y)
         else:
             for layer, params_ in zip(self.layers, params):
+                # print(f"t: {t}")
+                # print(f"y.shape: {y.shape}")
+                # print(f"params_: {params_[0].shape}")
                 y = layer(t, y, params_)
         return y
 

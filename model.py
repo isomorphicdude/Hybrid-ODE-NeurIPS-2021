@@ -377,8 +377,14 @@ class EncoderLSTM(nn.Module, GaussianReparam):
 
 
 class RocheODE(nn.Module):
-    """Expert ODE"""
-    def __init__(self, latent_dim, action_dim, t_max, step_size, ablate=False, device=None, dtype=DTYPE):
+    """Expert Hybrid ODE for Roche model."""
+    def __init__(self, 
+                 latent_dim, 
+                 action_dim, 
+                 t_max, 
+                 step_size, 
+                 ablate=False, 
+                 device=None, dtype=DTYPE):
         super().__init__()
 
         assert action_dim == 1
@@ -391,6 +397,7 @@ class RocheODE(nn.Module):
         
         # the rest is governed by neural ODE
         self.ml_dim = self.latent_dim - self.expert_dim
+        print(f"ml_dim: {self.ml_dim}")
         
         # use hybrid when expanded
         self.expanded = True if self.ml_dim > 0 else False
@@ -458,8 +465,22 @@ class RocheODE(nn.Module):
     def dose_at_time(self, t):
         # self.t = t
         return self.dosage * torch.sum(
-            torch.exp(self.kel * (self.times - t) * (t >= self.times)) * (t >= self.times), dim=-1
+            torch.exp(self.kel * (self.times - t) * \
+                (t >= self.times)) * (t >= self.times), dim=-1
         )
+    # def dose_at_time(self, t):
+    #     """Computes the dosage at time t in [0,1]."""
+    #     return self.dosage * torch.sum(
+    #         torch.exp(self.kel * \
+    #             (self.times - t * self.t_max) * \
+    #                 (self.t_max * t >= self.times)) * \
+    #                     (self.t_max * t >= self.times), dim=-1
+    #     )
+    
+        # return torch.sum(
+        #     torch.exp(self.kel * (self.times - t) * \
+        #         (t >= self.times)) * (t >= self.times), dim=-1
+        # )
 
     def forward(self, t, y):
         # y: B, D
@@ -526,7 +547,16 @@ class MaskedLinear(nn.Module):
 
 
 class RocheODEReal(nn.Module):
-    def __init__(self, latent_dim, action_dim, static_dim, hidden_dim, t_max, step_size, device=None, dtype=DTYPE):
+    def __init__(self, 
+                 latent_dim,
+                 action_dim,
+                 static_dim,
+                 hidden_dim,
+                 t_max,
+                 step_size,
+                 device=None,
+                 dtype=DTYPE):
+        
         super().__init__()
         self.action_dim = int(action_dim)
         self.latent_dim = int(latent_dim)
@@ -927,8 +957,6 @@ class DecoderRealBenchmark(nn.Module):
         x_hat = self.output_function(h)
         return x_hat, h
 
-class BayesianNeuralODE(nn.Module):
-    pass
 
 class NeuralODE(nn.Module):
     def __init__(self, latent_dim, action_dim, t_max, step_size, device=None, dtype=DTYPE):
@@ -1059,7 +1087,8 @@ class RocheExpertDecoder(nn.Module):
 
         self.output_function = nn.Sequential(
             nn.Linear(self.latent_dim, 
-                      self.obs_dim, bias=True),
+                      self.obs_dim, 
+                      bias=True),
             # nn.Tanh()
         ).to(self.device)
 
@@ -1079,7 +1108,7 @@ class RocheExpertDecoder(nn.Module):
         self.ode.set_action(a)
         # solve ode
         # h = ode_solver.odesolve(self.ode, init, self.options)
-        
+        print(init.shape)
         h = dto(
             self.ode, 
             init, 

@@ -118,7 +118,10 @@ def run(
         )
 
         # stacked into a variational inference model
-        vi = model.VariationalInference(encoder, decoder, prior_log_pdf=prior, elbo=elbo)
+        vi = model.VariationalInference(encoder, 
+                                        decoder, 
+                                        prior_log_pdf=prior,
+                                        elbo=elbo)
 
         if eval_only:
             logging.info("Evaluation only. Breaking...")
