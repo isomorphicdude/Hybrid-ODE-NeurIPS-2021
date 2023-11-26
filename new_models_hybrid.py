@@ -244,6 +244,7 @@ class SDENet4(torchsde.SDEStratonovich):
                  batch_size=32,
                  adaptive=False,
                  device=None,
+                 scaling_factor = 1,
                  ablate=False):
         
         if device is None:
@@ -269,6 +270,7 @@ class SDENet4(torchsde.SDEStratonovich):
         self.ablate = ablate
         self.expert_dim = 4
         self.augmented_dim = augmented_dim
+        self.scaling_factor = scaling_factor
         
         # action configurations
         dc = sim_config.RochConfig()
@@ -291,7 +293,7 @@ class SDENet4(torchsde.SDEStratonovich):
                                              t_max + step_size,
                                              step_size,
                                              device=self.device,
-                                             dtype=DTYPE) / self.t_max
+                                             dtype=DTYPE) / self.scaling_factor
         
         
         # Create network evolving state.
@@ -358,9 +360,9 @@ class SDENet4(torchsde.SDEStratonovich):
         """Computes the dosage at time t."""
         return self.dosage * torch.sum(
             torch.exp(self.kel * \
-                (self.action_times - t * self.t_max) * \
-                    (self.t_max * t >= self.action_times)) * \
-                        (self.t_max * t >= self.action_times), dim=-1
+                (self.action_times - t * self.scaling_factor) * \
+                    (self.scaling_factor * t >= self.action_times)) * \
+                        (self.scaling_factor * t >= self.action_times), dim=-1
         )
     
         
@@ -406,7 +408,9 @@ class SDENet4(torchsde.SDEStratonovich):
                               Immunity,
                               Dose2,
                               self.dose_at_time,
-                              device=self.device)
+                              device=self.device,
+                              in_SDE=True,
+                              scaling_factor=self.scaling_factor)
         
         # same size as fy        
         ncde_fy = torch.einsum("ijk,ik->ij", 
@@ -462,9 +466,7 @@ class SDENet4(torchsde.SDEStratonovich):
                 action,
                 adjoint=False,
                 adjoint_adaptive=False, 
-                method="midpoint", 
-                rtol=1e-4,
-                atol=1e-3):
+                method="midpoint"):
         self.nfe = 0    
         
         # set treatment actions
@@ -508,27 +510,14 @@ class SDENet4(torchsde.SDEStratonovich):
         )
  
         
-        if adjoint_adaptive:
-            sde_output = sdeint(self, 
-                               aug_y,
-                               self.prediction_times,
-                               bm=bm,
-                               method=method,
-                               dt=self.dt,
-                               adaptive=self.adaptive,
-                               adjoint_adaptive=adjoint_adaptive,
-                               rtol=rtol,
-                               atol=atol)
-        else:
-            sde_output = sdeint(self, 
-                               aug_y,
-                               self.prediction_times,
-                               bm=bm,
-                               method=method,
-                               dt=self.dt,
-                               adaptive=self.adaptive,
-                               rtol=rtol,
-                               atol=atol)
+        
+        sde_output = sdeint(self, 
+                            aug_y,
+                            self.prediction_times,
+                            bm=bm,
+                            method=method,
+                            dt=self.dt,
+                            adaptive=self.adaptive)
         
         # Only return the hidden part of the state. (_ is the weight)
         y1 = sde_output[:, :, :y.numel()].flatten().reshape(len(self.prediction_times), 
