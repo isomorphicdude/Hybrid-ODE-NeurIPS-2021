@@ -22,7 +22,7 @@ def make_y_net(input_size,
             # use linear layers for now
             [
                 diffeq_layers.Linear(_input_size[0], hidden_width),
-                diffeq_layers.DiffEqWrapper(nn.ReLU()),
+                diffeq_layers.DiffEqWrapper(nn.Tanh()),
                 diffeq_layers.Linear(hidden_width, _input_size[0]),
                 diffeq_layers.DiffEqWrapper(nn.Tanh()),
                 # diffeq_layers.Linear(hidden_width, _input_size[0]),
@@ -72,7 +72,7 @@ def make_y_net_CDE(input_size,
                 # use linear layers for now
                 [
                     diffeq_layers.Linear(_input_size[0], hidden_size[i]),
-                    diffeq_layers.DiffEqWrapper(nn.ReLU()),
+                    diffeq_layers.DiffEqWrapper(nn.Tanh()),
                 ]
             )
         layers.extend(
@@ -100,7 +100,7 @@ def make_y_net_CDE(input_size,
 def make_w_net(in_features, 
                out_features,
                hidden_sizes=(2, ),
-               activation="relu"
+               activation="tanh"
                ):
     """Evolving weights network."""
     activation = utils.select_activation(activation)
@@ -129,6 +129,7 @@ def expertODE(t,
               Dose2,
               dose_func,
               device=None,
+              scaling_factor=1,
               in_SDE=False):
     """
     Computes the RHS of the expert ODE.
@@ -141,7 +142,7 @@ def expertODE(t,
         - Dose2: drug dose
         - dose_func: dose function at time t
         - device: device to use
-        - in_SDE: if the ODE is used in an SDE
+        - scaling_factor: scaling factor for the output
     """
     # parameters for the expert ODE
     dtype = DTYPE
@@ -185,19 +186,12 @@ def expertODE(t,
 
     dxdt4 = kel * Dose - kel * Dose2
     
-    if not in_SDE:
-        return torch.cat([
-            dxdt1[..., None],
-            dxdt2[..., None],
-            dxdt3[..., None],
-            dxdt4[..., None]
-        ], dim=-1)
-    else:
-        return torch.cat([
-            dxdt1[..., None],
-            dxdt2[..., None],
-            dxdt3[..., None],
-            dxdt4[..., None]
-        ], dim=-1) * 14.0
+    
+    return torch.cat([
+        dxdt1[..., None],
+        dxdt2[..., None],
+        dxdt3[..., None],
+        dxdt4[..., None]
+    ], dim=-1) * scaling_factor
     
     
