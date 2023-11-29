@@ -2,15 +2,11 @@
 
 Code for *Expert Controlled Neural Differential Equations: Disease Progression Modelling*, mini-project for the van der Schaar Lab.  
 
-> **Abstract:** Incorporating expert knowledge into machine learning models has achieved suc-
-cesses in various scientific domains. In particular, in pharmacology, the Latent
+> **Abstract:** Incorporating expert knowledge into machine learning models has succeeded in various scientific domains. In particular, in pharmacology, the Latent
 Hybridisation Model (LHM) has exhibited remarkable predictive performance on
 real-world intensive care data of COVID-19 patients. However, its assumption
-about the expert model being self-contained might be restrictive in certain sce-
-narios. To remedy this, we propose a principled method using ideas from neural
-controlled differential equations, which enjoy well-developed mathematical founda-
-tions. We provide an alternative way to leverage expert knowledge and demonstrate
-competitive predictive performance of our model on simulated datasets.
+about the self-contained expert model might be restrictive in certain scenarios. To remedy this, we propose a principled method using ideas from neural
+controlled differential equations, which enjoy well-developed mathematical foundations. We provide an alternative way to leverage expert knowledge and demonstrate the competitive predictive performance of our model on simulated datasets.
 
 
 <!-- figure   -->
