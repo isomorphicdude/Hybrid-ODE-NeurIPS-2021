@@ -31,6 +31,8 @@ def variational_training_loop(
         
     logging.info("Training {}".format(model.model_name))
     best_loss = 1e9
+    
+    best_future_mse = 1e9
 
     early_stop_counter = 0
     if train_fold == "train":
@@ -58,7 +60,7 @@ def variational_training_loop(
         #     break
         # print(model.decoder.flat_initial_params)
         # print(list(model.decoder.projection.parameters()))
-        print(f"iter {itr}")
+        # print(f"iter {itr}")
         loss = model.loss(data)
         loss.backward()
         # print('calculate backward')
@@ -70,6 +72,7 @@ def variational_training_loop(
             with torch.no_grad():
                 total_loss = 0
                 for chunk in range(data_generator.val_size // batch_size):
+                    # print(f"chunk {chunk}")
                     data = data_generator.get_split("val", batch_size, chunk)
                     try:
                         total_loss += model.loss(data).item()
@@ -102,27 +105,31 @@ def variational_training_loop(
                         # predicting future
                         x_test = data["measurements"][t0:]
                         mask_test = data["masks"][t0:]
-                        future_mse = torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))
-                        print(f"Iter {itr} | Future mse starting at {t0}: {future_mse}")
+                        future_mse = torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, 
+                                                          dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))
+
+                        print(f"Iter {itr} | Future mse starting at {t0}: {future_mse} | KL loss: {model.kl}")
                         
-                        # logging.info(f"Future mse: {torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))}")
+                        logging.info(f"Iter {itr} | Future mse starting at {t0}: {future_mse} | KL loss: {model.kl}")
                 print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
-                # logging.info(
-                #     "Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item())
-                # )
+                logging.info("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
+                
                 if total_loss < best_loss:
                     best_loss = total_loss
                     early_stop_counter = 0
                 else:
                     early_stop_counter += 1
 
-                if total_loss < best_on_disk:
+                if total_loss < best_on_disk and future_mse < best_future_mse:
                     print("Saving best model")
+                    logging.info("Saving best model")
                     best_on_disk = total_loss
+                    best_future_mse = future_mse
                     model.save(path, itr, best_on_disk)
                 
 
         if early_stop_counter >= early_stop:
+            print("Early stopping")
             logging.info("Early stopping")
             break
 
@@ -150,7 +157,15 @@ def variational_training_loop(
     return model, best_loss, end - start
 
 
-def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
+def evaluate(model, 
+             data_generator,
+             batch_size, 
+             t0,
+             mc_itr=50,
+             real=False,
+             hybrid_cde=False,
+             ):
+    
     with torch.no_grad():
         # sample-level rmse
         total_rmse_z0 = list()
@@ -179,7 +194,17 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
             else:
                 # simulation data
                 encoder_out = model.encoder(x, a, mask)
-                z0_hat = encoder_out[0]
+                if hybrid_cde:
+                    _z0_hat_og = encoder_out[0]
+                    _z0_hat_exp = model.expert_encoder(x, a, mask)[0]
+                    z0_hat = torch.cat((
+                                _z0_hat_og,
+                                _z0_hat_exp
+                            ), dim=1
+                        )
+                else:
+                    z0_hat = encoder_out[0]
+                    
                 x_hat, _ = model.decoder(z0_hat, data["actions"])
 
             x_hat = x_hat[t0:, ...]
@@ -193,24 +218,35 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
             total_rmse_x.append(
                 torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2))
             )
+            
             print(f"Future mse: {torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))}")
+            logging.info(f"Future mse: {torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))}")
             z_list = list()
             x_hat_list = list()
 
             for i in range(mc_itr):
-                z_ = model.encoder.reparameterize(*encoder_out)
-                if real:
-                    x_hat, _ = model.decoder(z_, data["actions"], data["statics"])
-                else:
+                if not hybrid_cde:
+                    z_ = model.encoder.reparameterize(*encoder_out)
                     x_hat, _ = model.decoder(z_, data["actions"])
-                z_list.append(z_)
+                    z_list.append(z_)
+                else:
+                    expert_encoder_out = model.expert_encoder(x, a, mask)
+                    og_z_ = model.encoder.reparameterize(*encoder_out)
+                    exp_z_ = model.expert_encoder.reparameterize(*expert_encoder_out)
+                    x_hat, _ = model.decoder(torch.cat((
+                        og_z_,
+                        exp_z_
+                    ), dim=1), data["actions"]) 
+                    z_list.append(og_z_)
+                    
                 x_hat_list.append(x_hat)
-
+                
             # B, D, MC
             z_mat = torch.stack(z_list, dim=-1)
 
             # B, D
             z_cprs = np.zeros(z0[:, : data_generator.expert_dim].shape)
+            
             for d1 in range(z0.shape[0]):
                 for d2 in range(data_generator.expert_dim):
                     truth = z0[d1, d2].item()
@@ -229,6 +265,7 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
                         truth = x_test[d1, d2, d3].item()
                         pred = x_hat_mat[d1, d2, d3, :].cpu().numpy()
                         x_cprs[d1, d2, d3] = ps.crps_ensemble(truth, pred)
+                        
             x_cprs = np.mean(x_cprs, axis=(0, 2))
             total_cprs_x.append(x_cprs)
 
@@ -249,10 +286,10 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
         cprs_x = np.mean(total_cprs_x)
         cprs_x_sd = np.std(total_cprs_x) / np.sqrt(len(total_cprs_x))
 
-        # print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
-        # print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
-        # print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
-        # print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
+        print("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
+        print("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
+        print("cprs_z0,{:.4f},{:.4f}".format(cprs_z0, cprs_z0_sd))
+        print("cprs_x,{:.4f},{:.4f}".format(cprs_x, cprs_x_sd))
         
         logging.info("rmse_z0,{:.4f},{:.4f}".format(rmse_z0, rmse_z0_sd))
         logging.info("rmse_x,{:.4f},{:.4f}".format(rmse_x, rmse_x_sd))
