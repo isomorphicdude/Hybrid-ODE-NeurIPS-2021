@@ -1,51 +1,25 @@
-# Hybrid-ODE-NeurIPS-2021
-Code for [Integrating Expert ODEs into Neural ODEs: Pharmacology and Disease Progression (NeurIPS 2021)](https://papers.neurips.cc/paper/2021/hash/5ea1649a31336092c05438df996a3e59-Abstract.html).
+# Expert Controlled Neural Differential Equations: Disease Progression Modelling  
+
+Code for *Expert Controlled Neural Differential Equations: Disease Progression Modelling*, mini-project for the van der Schaar Lab.  
+
+> **Abstract:** Incorporating expert knowledge into machine learning models has achieved suc-
+cesses in various scientific domains. In particular, in pharmacology, the Latent
+Hybridisation Model (LHM) has exhibited remarkable predictive performance on
+real-world intensive care data of COVID-19 patients. However, its assumption
+about the expert model being self-contained might be restrictive in certain sce-
+narios. To remedy this, we propose a principled method using ideas from neural
+controlled differential equations, which enjoy well-developed mathematical founda-
+tions. We provide an alternative way to leverage expert knowledge and demonstrate
+competitive predictive performance of our model on simulated datasets.
 
 
+<!-- figure   -->
+<p align="center">
+  <img src="figures/results.png" width="800" />
+</p>
 
-## Installation
+The main implementation can be found in `new_models_cde.py`. The implementation for incorporating infinitely deep BNN can be found in `new_models_hybrid.py`. 
 
-Python 3.6+ is recommended. Install dependencies as per [`requirements.txt`](./requirements.txt). 
+Our code is based on [Hybrid-ODE-NeurIPS-2021](https://github.com/vanderschaarlab/Hybrid-ODE-NeurIPS-2021) and the BNN part is based on [Infinitely Deep Bayesian Neural Networks with SDEs](https://github.com/xwinxu/bayeSDE). 
 
-If [CUDA](https://developer.nvidia.com/cuda-zone) support is needed: 
-* make sure you have [appropriate drivers](https://www.nvidia.co.uk/Download/index.aspx) installed, 
-* make sure you have [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (a version compatible with PyTorch `1.10`, see [here](https://pytorch.org/get-started/locally/) or [here](https://pytorch.org/get-started/previous-versions/)) installed on your system or in you virtual environment.
-
-
-
-## Replicating Experiments
-
-Shell scripts to replicate the experiments can be found in [`experiments/`](./experiments/).
-
-To run all the synthetic data experiments:
-```bash
-$ bash experiments/run_all.sh
-```
-You may also run the experiment steps individually, see [`experiments/run_all.sh`](./experiments/run_all.sh). To then produce the figures, run the Jupyter notebooks `Fig3.ipynb`, `Fig6.ipynb`, `Fig7.ipynb`, `Fig9.ipynb` found under [`experiments/`](./experiments/).
-
-To run real data experiments: 
-1. Access to Dutch Data Warehouse dataset is required, see [`real_data/README.md`](./real_data/README.md) for more information.
-
-2. Preprocess the data, as documented in [`real_data/README.md`](./real_data/README.md).
-
-3. Run experiments:
-    ```bash
-    $ bash experiments/real.sh
-    ```
-
-
-
-## Citing
-
-If you use this code, please cite the associated paper:
-
-```
-@inproceedings{NEURIPS2021,
-  author = {Qian, Zhaozhi and Zame, William R and Fleuren, Lucas M and Elbers, Paul and van der Schaar, Mihaela},
-  booktitle = {Advances in Neural Information Processing Systems},
-  title = {Integrating Expert ODEs into Neural ODEs: Pharmacology and Disease Progression},
-  url = {https://papers.neurips.cc/paper/2021/file/5ea1649a31336092c05438df996a3e59-Paper.pdf},
-  volume = {34},
-  year = {2021}
-}
-```
+We also remark that the results may vary from run to run due to the randomness in training and evaluation.
