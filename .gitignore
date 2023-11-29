@@ -110,6 +110,15 @@ results/
 !results/results_dim.txt
 !results/results_noise.txt
 !results/results_sample.txt
+*.pkl
+new-models/
+new_experiments/constant_coeff.txt
+new_experiments/400_eval_times.txt
+models_eval/
+ro-1.ipynb
+# ro-2.ipynb
+ro-3.ipynb
+ro-4-plotting.ipynb
 
 .flake8
 .vscode
