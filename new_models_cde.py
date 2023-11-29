@@ -32,6 +32,7 @@ class NewRocheCDE1(nn.Module):
                  device=None, 
                  extra_dim=0,
                  use_beta = False,
+                 include_time = False,
                  dtype=DTYPE):
         super().__init__()
 
@@ -68,6 +69,7 @@ class NewRocheCDE1(nn.Module):
 
         self.t_max = t_max
         self.step_size = step_size
+        self.include_time = include_time
 
         # parameters for the expert ODE
         dc = sim_config.RochConfig()
@@ -96,7 +98,13 @@ class NewRocheCDE1(nn.Module):
             self.ml_net = nn.Sequential(nn.Linear(self.latent_dim, 
                                                     self.expert_dim * self.latent_dim), 
                                         nn.Tanh())
+        elif include_time:
+            print("Including time in the expert model")
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
+                                                  (self.latent_dim-self.expert_dim) * (1 + self.expert_dim)),
+                                        nn.Tanh())
         else:
+            print("Not including time in the expert model")
             self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
                                                   (self.latent_dim-self.expert_dim) * self.expert_dim),
                                         nn.Tanh())
@@ -106,9 +114,274 @@ class NewRocheCDE1(nn.Module):
                                     requires_grad=True)
         # self.alpha = nn.Parameter(torch.rand(1, dtype=dtype, device=self.device))
         self.use_beta = use_beta
+        
         if self.use_beta:
             # use another parameter to weight the expert
-            self.beta = nn.Parameter(torch.rand(1, dtype=dtype, device=self.device))
+            self.beta = nn.Parameter(torch.tensor(0.5, device=self.device, dtype=dtype),
+                                     requires_grad=False)
+            
+            
+        self.expert_mat = nn.Parameter(torch.cat([torch.eye(self.expert_dim,),
+                                        torch.zeros(self.expert_dim,
+                                                    self.ml_dim,)],
+                                        dim=0),
+                                        requires_grad=True)
+        
+        # parameters for the action
+        self.times = None
+        self.dosage = None
+
+    def set_action(self, action):
+        self.dosage = torch.max(action[..., 0], dim=0)[0] 
+
+        time_list = []
+        for i in range(action.shape[1]):
+            # indices of non-zero dosage
+            time = torch.where(action[..., 0][:, i] != 0)[0]
+            time = time * self.step_size # step is 1
+            time_list.append(time)
+
+        # B, N_DOSE
+        self.times = torch.stack(time_list, dim=0)
+
+    def dose_at_time(self, t):
+        return self.dosage * torch.sum(
+            torch.exp(self.kel * (self.times - t) * \
+                (t >= self.times)) * (t >= self.times), dim=-1
+        )
+
+    def forward(self, t, y):
+        # y: B, D
+        # length of B
+        # the expert variables are the last 4
+        y_expert = y[:, -self.expert_dim:]
+        Disease = y_expert[:, 0]
+        ImmuneReact = y_expert[:, 1]
+        Immunity = y_expert[:, 2]
+        Dose2 = y_expert[:, 3]
+
+        if not self.ablate:
+            Dose = self.dose_at_time(t)
+
+            dxdt1 = (
+                Disease * self.k_disprog
+                - Disease * Immunity ** self.HillCure * self.k_discure_immunity
+                - Disease * ImmuneReact * self.k_discure_immunereact
+            )
+
+            dxdt2 = (
+                Disease * self.k_immune_disease
+                - ImmuneReact * self.k_immune_off
+                + Disease * ImmuneReact * self.k_immune_feedback
+                + (ImmuneReact ** self.HillPatho * self.emax_patho)
+                / (self.ec50_patho ** self.HillPatho + ImmuneReact ** self.HillPatho)
+                - Dose2 * ImmuneReact * self.k_dexa
+            )
+
+            dxdt3 = ImmuneReact * self.k_immunity
+
+            dxdt4 = self.kel * Dose - self.kel * Dose2
+        else:
+            # mis-specified parameters
+            dxdt1 = ImmuneReact
+            dxdt2 = -1.0 * Disease * self.theta_1 * 100
+            dxdt3 = Dose2
+            dxdt4 = -1.0 * Immunity * self.theta_2 * 100
+        
+        dmldt = self.ml_net(y[:, :-self.expert_dim])
+        
+        # separate the expert and the neural ODE
+        _dexpdt = torch.cat([dxdt1[..., None], 
+                            dxdt2[..., None], 
+                            dxdt3[..., None], 
+                            dxdt4[..., None], 
+                            ], 
+                            dim=-1)
+        
+        # weight the expert opinions by beta
+        # clamped_beta = torch.clamp(self.beta, 0, 1)
+        # clamped_beta = torch.tanh(self.beta)
+        # clamped_beta = torch.sigmoid(self.beta)
+        
+        if self.use_beta:
+            clamped_beta = torch.clamp(self.beta, 0, 1)
+            dexpdt = clamped_beta * _dexpdt + (1 - clamped_beta) * torch.ones_like(_dexpdt)
+        else:
+            dexpdt = _dexpdt
+            
+        # first term is the expert
+        
+        expert_term = torch.einsum("ij,bj->bi", 
+                                   self.expert_mat, 
+                                   dexpdt)
+                                    
+        clamped_alpha = torch.clamp(self.alpha, 0, 1)
+        
+        weighted_expert = torch.multiply(clamped_alpha, expert_term)
+        
+        # second term is the ml
+        if not self.include_expert:
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, self.latent_dim, self.expert_dim),
+                                    dexpdt)
+            # weight ml_term by alpha
+            weight_exp = torch.ones_like(dexpdt) * (1 - clamped_alpha)
+            
+            weight_ml = torch.ones((dexpdt.shape[0], self.latent_dim - self.expert_dim))
+            
+            weight_ml = torch.cat([weight_exp, 
+                                    weight_ml], dim=-1)
+            
+            weighted_ml = weight_ml * ml_term
+        
+        elif self.include_time:
+            # (batch, dim)
+            dexpdt_ = torch.cat([torch.ones(dexpdt.shape[0], 1),
+                                  dexpdt],
+                                  dim=1)
+            
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, 
+                                                  self.latent_dim-self.expert_dim, 
+                                                  1 + self.expert_dim),
+                                    dexpdt_)
+            
+            weight_exp = torch.ones((dexpdt_.shape[0], 
+                                     dexpdt_.shape[1]-1)) * (1 - clamped_alpha)
+            
+            # here the time should not be penalized
+            weight_ml = torch.ones((dexpdt_.shape[0], 
+                                    self.latent_dim - 2 * self.expert_dim))
+            
+            weight_ml = torch.cat([weight_exp, 
+                                    weight_ml], dim=-1)
+            weighted_ml = weight_ml * ml_term
+            
+        else:
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, 
+                                                  self.latent_dim-self.expert_dim, 
+                                                  self.expert_dim),
+                                    dexpdt)
+            
+            weight_exp = torch.ones_like(dexpdt) * (1 - clamped_alpha)
+            
+            weight_ml = torch.ones((dexpdt.shape[0], self.latent_dim - 2 * self.expert_dim))
+            
+            weight_ml = torch.cat([weight_exp, 
+                                    weight_ml], dim=-1)
+            
+            weighted_ml = weight_ml * ml_term
+        
+        
+        # sum the two terms
+        dxdt = weighted_expert + weighted_ml
+        
+        return torch.cat([
+            dxdt,
+            dexpdt
+        ], dim=-1)
+        
+class NewRocheCDE2(nn.Module):
+    """
+    Same as above but with fixed constant coefficients 
+    """
+    def __init__(self, 
+                 latent_dim, 
+                 action_dim, 
+                 t_max, 
+                 step_size, 
+                 ablate=False, 
+                 include_expert=False,
+                 device=None, 
+                 extra_dim=0,
+                 use_beta = False,
+                 include_time = False,
+                 dtype=DTYPE):
+        super().__init__()
+
+        assert action_dim == 1
+
+        self.action_dim = action_dim
+        self.latent_dim = int(latent_dim)
+        self.extra_dim = extra_dim
+        
+        # fixed expert dim
+        self.expert_dim = int(4)
+        
+        # the rest is governed by neural ODE
+        self.ml_dim = self.latent_dim - self.expert_dim
+        
+        self.include_expert = include_expert
+        if self.include_expert:
+            print("Including expert model")
+            self.ml_dim = self.latent_dim - 2 * self.expert_dim
+        
+        
+        print(f"latent_dim: {self.latent_dim}")
+        print(f"expert_dim: {self.expert_dim}")
+        print(f"ml_dim: {self.ml_dim}")
+        
+        # use hybrid when expanded
+        self.expanded = True if self.ml_dim > 0 else False
+        self.ablate = ablate
+
+        if device is None:
+            self.device = get_device()
+        else:
+            self.device = device
+
+        self.t_max = t_max
+        self.step_size = step_size
+        self.include_time = include_time
+
+        # parameters for the expert ODE
+        dc = sim_config.RochConfig()
+        self.HillCure = nn.Parameter(torch.tensor(dc.HillCure, device=self.device, dtype=dtype))
+        self.HillPatho = nn.Parameter(torch.tensor(dc.HillPatho, device=self.device, dtype=dtype))
+        self.ec50_patho = nn.Parameter(torch.tensor(dc.ec50_patho, device=self.device, dtype=dtype))
+        self.emax_patho = nn.Parameter(torch.tensor(dc.emax_patho, device=self.device, dtype=dtype))
+        self.k_dexa = nn.Parameter(torch.tensor(dc.k_dexa, device=self.device, dtype=dtype))
+        self.k_discure_immunereact = nn.Parameter(
+            torch.tensor(dc.k_discure_immunereact, device=self.device, dtype=dtype)
+        )
+        self.k_discure_immunity = nn.Parameter(torch.tensor(dc.k_discure_immunity, device=self.device, dtype=dtype))
+        self.k_disprog = nn.Parameter(torch.tensor(dc.k_disprog, device=self.device, dtype=dtype))
+        self.k_immune_disease = nn.Parameter(torch.tensor(dc.k_immune_disease, device=self.device, dtype=dtype))
+        self.k_immune_feedback = nn.Parameter(torch.tensor(dc.k_immune_feedback, device=self.device, dtype=dtype))
+        self.k_immune_off = nn.Parameter(torch.tensor(dc.k_immune_off, device=self.device, dtype=dtype))
+        self.k_immunity = nn.Parameter(torch.tensor(dc.k_immunity, device=self.device, dtype=dtype))
+        self.kel = nn.Parameter(torch.tensor(dc.kel, device=self.device, dtype=dtype))
+        
+        if self.ablate:
+            # ablation uses mis-specified parameters
+            self.theta_1 = torch.tensor(1, device=self.device, dtype=dtype)
+            self.theta_2 = torch.tensor(2, device=self.device, dtype=dtype)
+
+        if not self.include_expert:
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim, 
+                                                    self.expert_dim * self.latent_dim), 
+                                        nn.Tanh())
+        elif include_time:
+            print("Including time in the expert model")
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
+                                                  (self.latent_dim-self.expert_dim) * (1 + self.expert_dim)),
+                                        nn.Tanh())
+        else:
+            print("Not including time in the expert model")
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
+                                                  (self.latent_dim-self.expert_dim) * self.expert_dim),
+                                        nn.Tanh())
+
+        
+        # do not change the parameters
+        self.alpha = nn.Parameter(torch.tensor(0.5, device=self.device, dtype=dtype),
+                                    requires_grad=False)
+        self.use_beta = use_beta
+        if self.use_beta:
+            # use another parameter to weight the expert
+            self.beta = nn.Parameter(torch.tensor(0.5, device=self.device, dtype=dtype),
+                                     requires_grad=False)
             
         
         self.expert_mat = nn.Parameter(torch.cat([torch.eye(self.expert_dim,),
@@ -118,6 +391,9 @@ class NewRocheCDE1(nn.Module):
                                             requires_grad=True)
             
             
+        print(f"Using alpha value: {self.alpha}, requires grad: {self.alpha.requires_grad}")
+        print(f"Using beta value: {self.beta}, requires grad: {self.beta.requires_grad}")
+        
         # parameters for the action
         self.times = None
         self.dosage = None
@@ -220,6 +496,30 @@ class NewRocheCDE1(nn.Module):
                                     weight_ml], dim=-1)
             
             weighted_ml = weight_ml * ml_term
+        
+        elif self.include_time:
+            # (batch, dim)
+            dexpdt_ = torch.cat([torch.ones(dexpdt.shape[0], 1),
+                                  dexpdt],
+                                  dim=1)
+            
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, 
+                                                  self.latent_dim-self.expert_dim, 
+                                                  1 + self.expert_dim),
+                                    dexpdt_)
+            
+            weight_exp = torch.ones((dexpdt_.shape[0], 
+                                     dexpdt_.shape[1]-1)) * (1 - clamped_alpha)
+            
+            # here the time should not be penalized
+            weight_ml = torch.ones((dexpdt_.shape[0], 
+                                    self.latent_dim - 2 * self.expert_dim))
+            
+            weight_ml = torch.cat([weight_exp, 
+                                    weight_ml], dim=-1)
+            weighted_ml = weight_ml * ml_term
+            
         else:
             ml_term = torch.einsum("bij,bj->bi",
                                     dmldt.reshape(-1, 
@@ -246,6 +546,200 @@ class NewRocheCDE1(nn.Module):
         ], dim=-1)
         
         
+class VanillaRocheCDE(nn.Module):
+    """
+    Controlled Differential Equation for Roche model.
+    """
+    def __init__(self, 
+                 latent_dim, 
+                 action_dim, 
+                 t_max, 
+                 step_size, 
+                 ablate=False, 
+                 include_expert=False,
+                 device=None, 
+                 extra_dim=0,
+                 use_beta = False,
+                 include_time = False,
+                 dtype=DTYPE):
+        super().__init__()
+
+        assert action_dim == 1
+
+        self.action_dim = action_dim
+        self.latent_dim = int(latent_dim)
+        self.extra_dim = extra_dim
+        self.include_time = include_time
+        
+        # fixed expert dim
+        self.expert_dim = int(4)
+        
+        # the rest is governed by neural ODE
+        self.ml_dim = self.latent_dim - self.expert_dim
+        
+        self.include_expert = include_expert
+        if self.include_expert:
+            print("Including expert model")
+            self.ml_dim = self.latent_dim - 2 * self.expert_dim
+        
+        
+        print(f"latent_dim: {self.latent_dim}")
+        print(f"expert_dim: {self.expert_dim}")
+        print(f"ml_dim: {self.ml_dim}")
+        
+        # use hybrid when expanded
+        self.expanded = True if self.ml_dim > 0 else False
+        self.ablate = ablate
+
+        if device is None:
+            self.device = get_device()
+        else:
+            self.device = device
+
+        self.t_max = t_max
+        self.step_size = step_size
+
+        # parameters for the expert ODE
+        dc = sim_config.RochConfig()
+        self.HillCure = nn.Parameter(torch.tensor(dc.HillCure, device=self.device, dtype=dtype))
+        self.HillPatho = nn.Parameter(torch.tensor(dc.HillPatho, device=self.device, dtype=dtype))
+        self.ec50_patho = nn.Parameter(torch.tensor(dc.ec50_patho, device=self.device, dtype=dtype))
+        self.emax_patho = nn.Parameter(torch.tensor(dc.emax_patho, device=self.device, dtype=dtype))
+        self.k_dexa = nn.Parameter(torch.tensor(dc.k_dexa, device=self.device, dtype=dtype))
+        self.k_discure_immunereact = nn.Parameter(
+            torch.tensor(dc.k_discure_immunereact, device=self.device, dtype=dtype)
+        )
+        self.k_discure_immunity = nn.Parameter(torch.tensor(dc.k_discure_immunity, device=self.device, dtype=dtype))
+        self.k_disprog = nn.Parameter(torch.tensor(dc.k_disprog, device=self.device, dtype=dtype))
+        self.k_immune_disease = nn.Parameter(torch.tensor(dc.k_immune_disease, device=self.device, dtype=dtype))
+        self.k_immune_feedback = nn.Parameter(torch.tensor(dc.k_immune_feedback, device=self.device, dtype=dtype))
+        self.k_immune_off = nn.Parameter(torch.tensor(dc.k_immune_off, device=self.device, dtype=dtype))
+        self.k_immunity = nn.Parameter(torch.tensor(dc.k_immunity, device=self.device, dtype=dtype))
+        self.kel = nn.Parameter(torch.tensor(dc.kel, device=self.device, dtype=dtype))
+        
+        if self.ablate:
+            # ablation uses mis-specified parameters
+            self.theta_1 = torch.tensor(1, device=self.device, dtype=dtype)
+            self.theta_2 = torch.tensor(2, device=self.device, dtype=dtype)
+
+        if not self.include_expert:
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim, 
+                                                    self.expert_dim * self.latent_dim), 
+                                        nn.Tanh())
+        elif include_time:
+            print("Including time in the expert model")
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
+                                                  (self.latent_dim-self.expert_dim) * (1 + self.expert_dim)),
+                                        nn.Tanh())
+        else:
+            print("Not including time in the expert model")
+            self.ml_net = nn.Sequential(nn.Linear(self.latent_dim-self.expert_dim,
+                                                  (self.latent_dim-self.expert_dim) * self.expert_dim),
+                                        nn.Tanh())
+            
+            
+        # parameters for the action
+        self.times = None
+        self.dosage = None
+
+    def set_action(self, action):
+        self.dosage = torch.max(action[..., 0], dim=0)[0] 
+
+        time_list = []
+        for i in range(action.shape[1]):
+            # indices of non-zero dosage
+            time = torch.where(action[..., 0][:, i] != 0)[0]
+            time = time * self.step_size # step is 1
+            time_list.append(time)
+
+        # B, N_DOSE
+        self.times = torch.stack(time_list, dim=0)
+
+    def dose_at_time(self, t):
+        return self.dosage * torch.sum(
+            torch.exp(self.kel * (self.times - t) * \
+                (t >= self.times)) * (t >= self.times), dim=-1
+        )
+
+    def forward(self, t, y):
+        # y: B, D
+        # length of B
+        # the expert variables are the last 4
+        y_expert = y[:, -self.expert_dim:]
+        Disease = y_expert[:, 0]
+        ImmuneReact = y_expert[:, 1]
+        Immunity = y_expert[:, 2]
+        Dose2 = y_expert[:, 3]
+
+        if not self.ablate:
+            Dose = self.dose_at_time(t)
+
+            dxdt1 = (
+                Disease * self.k_disprog
+                - Disease * Immunity ** self.HillCure * self.k_discure_immunity
+                - Disease * ImmuneReact * self.k_discure_immunereact
+            )
+
+            dxdt2 = (
+                Disease * self.k_immune_disease
+                - ImmuneReact * self.k_immune_off
+                + Disease * ImmuneReact * self.k_immune_feedback
+                + (ImmuneReact ** self.HillPatho * self.emax_patho)
+                / (self.ec50_patho ** self.HillPatho + ImmuneReact ** self.HillPatho)
+                - Dose2 * ImmuneReact * self.k_dexa
+            )
+
+            dxdt3 = ImmuneReact * self.k_immunity
+
+            dxdt4 = self.kel * Dose - self.kel * Dose2
+        else:
+            # mis-specified parameters
+            dxdt1 = ImmuneReact
+            dxdt2 = -1.0 * Disease * self.theta_1 * 100
+            dxdt3 = Dose2
+            dxdt4 = -1.0 * Immunity * self.theta_2 * 100
+            
+        dmldt = self.ml_net(y[:, :-self.expert_dim])
+        
+        # separate the expert and the neural ODE
+        dexpdt = torch.cat([dxdt1[..., None], 
+                            dxdt2[..., None], 
+                            dxdt3[..., None], 
+                            dxdt4[..., None], 
+                            ], 
+                            dim=-1)
+        
+        # second term is the ml
+        if not self.include_expert:
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, self.latent_dim, self.expert_dim),
+                                    dexpdt)
+        elif self.include_time:
+            dexpdt_ = torch.cat([torch.ones(dexpdt.shape[0], 1),
+                                  dexpdt],
+                                  dim=1)    
+            
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, 
+                                                    self.latent_dim-self.expert_dim, 
+                                                    1 + self.expert_dim),
+                                    dexpdt_)
+        else:
+            ml_term = torch.einsum("bij,bj->bi",
+                                    dmldt.reshape(-1, 
+                                                  self.latent_dim-self.expert_dim, 
+                                                  self.expert_dim),
+                                    dexpdt)
+        
+        # sum the two terms
+        dxdt = ml_term
+        
+        return torch.cat([
+            dxdt,
+            dexpdt
+        ], dim=-1)
+        
+        
 class RocheCDEDecoder(nn.Module):
     def __init__(
         self,
@@ -262,6 +756,9 @@ class RocheCDEDecoder(nn.Module):
         device=None,
         dtype=DTYPE,
         use_beta=False,
+        use_vanilla=False,
+        use_constant_coeff=False,
+        include_time = False,
     ):
         super().__init__()
 
@@ -276,6 +773,8 @@ class RocheCDEDecoder(nn.Module):
         self.model_name = "RocheExpertDecoderCDE"
         self.include_expert = include_expert
         self.use_beta = use_beta
+        self.use_vanilla = use_vanilla
+        self.use_constant_coeff = use_constant_coeff
 
         if self.ablate:
             self.model_name = self.model_name + "Ablate"
@@ -307,17 +806,56 @@ class RocheCDEDecoder(nn.Module):
 
         self.options = options
         
-        self.ode = NewRocheCDE1(
-            latent_dim=self.latent_dim,
-            action_dim=self.action_dim,
-            t_max=self.t_max,
-            step_size=self.step_size,
-            ablate=self.ablate,
-            device=self.device,
-            dtype=dtype,
-            include_expert=self.include_expert,
-            use_beta=self.use_beta,
-        ).to(self.device)
+        if not self.use_vanilla and not self.use_constant_coeff:
+            print(f'Using RocheCDE: {self.use_vanilla}')
+            self.ode = NewRocheCDE1(
+                latent_dim=self.latent_dim,
+                action_dim=self.action_dim,
+                t_max=self.t_max,
+                step_size=self.step_size,
+                ablate=self.ablate,
+                device=self.device,
+                dtype=dtype,
+                include_expert=self.include_expert,
+                use_beta=self.use_beta,
+                include_time=include_time,
+            ).to(self.device)
+            
+        elif not self.use_constant_coeff and self.use_vanilla:
+            print(f'Using vanilla RocheCDE: {self.use_vanilla}')
+            # use vanilla RocheCDE
+            self.ode = VanillaRocheCDE(
+                latent_dim=self.latent_dim,
+                action_dim=self.action_dim,
+                t_max=self.t_max,
+                step_size=self.step_size,
+                ablate=self.ablate,
+                device=self.device,
+                dtype=dtype,
+                include_expert=self.include_expert,
+                use_beta=self.use_beta,
+                include_time=include_time,
+            ).to(self.device)
+            
+        elif self.use_constant_coeff:
+            print(f"Using constant coefficients: {self.use_constant_coeff}")
+            self.ode = NewRocheCDE2(
+                latent_dim=self.latent_dim,
+                action_dim=self.action_dim,
+                t_max=self.t_max,
+                step_size=self.step_size,
+                ablate=self.ablate,
+                device=self.device,
+                dtype=dtype,
+                include_expert=self.include_expert,
+                use_beta=self.use_beta,
+                include_time=include_time,
+            ).to(self.device)
+            
+        else:
+            print(f"Using vanilla RocheCDE: {self.use_vanilla}")
+            print(f"Using constant coefficients: {self.use_constant_coeff}")
+            raise NotImplementedError("Not implemented yet")
 
         if not self.include_expert:
             self.output_function = nn.Sequential(
