@@ -1108,7 +1108,7 @@ class RocheExpertDecoder(nn.Module):
         self.ode.set_action(a)
         # solve ode
         # h = ode_solver.odesolve(self.ode, init, self.options)
-        print(init.shape)
+        # print(init.shape)
         h = dto(
             self.ode, 
             init, 
