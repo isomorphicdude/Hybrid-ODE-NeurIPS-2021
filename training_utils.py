@@ -107,10 +107,10 @@ def variational_training_loop(
                         mask_test = data["masks"][t0:]
                         future_mse = torch.mean(torch.sum((x_test - x_hat) ** 2 * mask_test, 
                                                           dim=(0, 2)) / torch.sum(mask_test, dim=(0, 2)))
-
-                        print(f"Iter {itr} | Future mse starting at {t0}: {future_mse} | KL loss: {model.kl}")
+                        if new:
+                            print(f"Iter {itr} | Future mse starting at {t0}: {future_mse} | KL loss: {model.kl}")
                         
-                        logging.info(f"Iter {itr} | Future mse starting at {t0}: {future_mse} | KL loss: {model.kl}")
+                        logging.info(f"Iter {itr} | Future mse starting at {t0}: {future_mse}")
                 print("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
                 logging.info("Iter {:04d} | Total Loss {:.6f} | Train Loss {:.6f}".format(itr, total_loss, loss.item()))
                 
